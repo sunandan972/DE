@@ -1,165 +1,91 @@
-from __future__ import annotations
-import json, os
-import streamlit as st
+"""Streamlit dashboard for deterministic digital fault diagnosis and repair."""
+import io
+import json
+import time
 import pandas as pd
-import matplotlib.pyplot as plt
-from sympy import symbols
-from sympy.logic.boolalg import SOPform, POSform, simplify_logic
-from nl_parser import DEMO_SCENARIOS, parse_natural_language, expression_to_sympy
-from logic_engine import (build_truth_table, canonical_forms, minimize_function, verify_spec,
-                          complexity_metrics, expression_to_verilog, variable_symbols)
-from logisim_exporter import build_logisim_circuit
+import streamlit as st
+from circuit_engine import make_circuit, Fault, MUTATIONS
+from fault_diagnostician import differential_table, diagnose, make_llm_prompt, verify_equivalence
+from logisim_exporter import export_logisim
 
-st.set_page_config(page_title="Natural Language → Logic Circuit", page_icon="⚡", layout="wide")
-st.title("⚡ Natural Language to Logic Circuit Generator")
-st.caption("Translate a decision rule into Boolean logic, inspect the truth table, simulate inputs, and export design artifacts.")
-with st.sidebar:
-    st.header("Configuration")
-    use_llm=st.toggle("Use OpenAI parser", value=False, help="Requires OPENAI_API_KEY in the environment.")
-    st.info("LLM output is treated as a draft specification and must pass validation and exhaustive logic checks.")
-    st.markdown("**Pipeline**")
-    st.markdown("1. Extract variables and rules\n2. Build truth table\n3. Minimize SOP/POS\n4. Verify all input states\n5. Export Verilog and Logisim")
+st.set_page_config(page_title="AI Circuit Fault Detection & Repair", layout="wide")
+st.title("AI-Based Fault Detection, Diagnosis & Automated Circuit Repair")
+st.caption("Deterministic Boolean simulation • Fault dictionary • Exhaustive repair verification")
 
-tab_build, tab_demos, tab_help = st.tabs(["Build a circuit", "Demo scenarios", "Help & assumptions"])
-with tab_build:
-    default_text="The alarm triggers when both the key is valid and the code is correct, or when motion is detected while night mode is active."
-    text=st.text_area("Describe the decision problem in plain English",value=default_text,height=120,
-                      placeholder="Example: Enable the motor when the guard is closed AND start is pressed, unless emergency stop is active.")
-    c1,c2=st.columns([1,3])
-    with c1:
-        parse_clicked=st.button("Extract logic specification",type="primary",use_container_width=True)
-    with c2:
-        st.caption("Offline mode supports the included demo patterns and explicit expressions such as `Y = (A AND B) OR NOT C`.")
-    if parse_clicked:
-        try:
-            st.session_state["spec"]=parse_natural_language(text,use_llm=use_llm)
-            st.session_state.pop("parse_error",None)
-        except Exception as exc:
-            st.session_state["parse_error"]=str(exc)
-    if "parse_error" in st.session_state:
-        st.error(st.session_state["parse_error"])
-    if "spec" in st.session_state:
-        spec=st.session_state["spec"]
-        st.subheader("Intermediate JSON specification")
-        st.json(spec,expanded=True)
-        input_names=[v["name"] for v in spec["inputs"]]
-        output_names=[v["name"] for v in spec["outputs"]]
-        output_name=st.selectbox("Output to analyze",output_names)
-        form=st.radio("Minimization form",["SOP","POS"],horizontal=True)
-        try:
-            table=build_truth_table(spec)
-            result=minimize_function(spec,output_name,form)
-            verify=verify_spec(spec,output_name,result["expression"])
-            original_expr=expression_to_sympy(spec["rules"][output_name],input_names)
-            before=complexity_metrics(original_expr,len(input_names))
-            after=complexity_metrics(result["expression"],len(input_names))
-            st.subheader("Reduced Boolean expression")
-            st.latex(str(result["expression"]).replace("~","\\neg ").replace("&","\\land ").replace("|","\\lor "))
-            st.code(f"Canonical SOP: {result['sop_canonical']}\nCanonical POS: {result['pos_canonical']}",language="text")
-            v1,v2,v3,v4=st.columns(4)
-            v1.metric("Input combinations",f"{2**len(input_names)}")
-            v2.metric("Gate count",f"{before['gate_count']} → {after['gate_count']}")
-            v3.metric("Logic levels",f"{before['logic_levels']} → {after['logic_levels']}")
-            v4.metric("Est. CMOS transistors",f"{before['estimated_transistors_cmos']} → {after['estimated_transistors_cmos']}")
-            st.caption("Delay is an educational estimate based on 5 ns per logic level, not device-level timing.")
-            metrics=pd.DataFrame([
-                {"Metric":"Gate count","Before":before["gate_count"],"After":after["gate_count"]},
-                {"Metric":"Logic levels","Before":before["logic_levels"],"After":after["logic_levels"]},
-                {"Metric":"Estimated CMOS transistors","Before":before["estimated_transistors_cmos"],"After":after["estimated_transistors_cmos"]},
-                {"Metric":"Estimated delay (ns)","Before":before["estimated_delay_ns"],"After":after["estimated_delay_ns"]},
-            ])
-            st.dataframe(metrics,use_container_width=True,hide_index=True)
-            st.subheader("Exhaustive equivalence verification")
-            if verify["equivalent"]:
-                st.success(f"PASS — reduced expression matches the original rule for all {verify['tested']} input combinations.")
-            else:
-                st.error(f"FAIL — {len(verify['failures'])} mismatches.")
-                st.dataframe(pd.DataFrame(verify["failures"]),use_container_width=True)
-            st.subheader("Truth table")
-            st.dataframe(table,use_container_width=True,hide_index=True)
-            st.download_button("Download truth table CSV",table.to_csv(index=False).encode(),file_name="truth_table.csv",mime="text/csv")
-            st.subheader("Interactive simulator")
-            st.caption("Toggle input bits to evaluate the original and reduced expressions live.")
-            cols=st.columns(min(6,len(input_names)))
-            bits=[]
-            for i,var in enumerate(spec["inputs"]):
-                with cols[i % len(cols)]:
-                    bits.append(st.toggle(f"{var['name']} · {var['label']}",value=False,key=f"sim_{var['name']}"))
-            bit_values=[int(b) for b in bits]
-            syms=variable_symbols(input_names)
-            env=dict(zip(syms,[bool(b) for b in bit_values]))
-            original_value=int(bool(original_expr.subs(env)))
-            reduced_value=int(bool(result["expression"].subs(env)))
-            s1,s2,s3=st.columns(3)
-            s1.metric("Input vector", "".join(map(str,bit_values)))
-            s2.metric("Original output",str(original_value))
-            s3.metric("Reduced output",str(reduced_value))
-            if original_value==reduced_value: st.success("Live simulation agrees.")
-            else: st.error("Mismatch detected.")
-            st.subheader("Gate-level schematic")
-            try:
-                from graphviz import Digraph
-                dot=Digraph("logic",format="svg")
-                dot.attr(rankdir="LR",splines="ortho",nodesep="0.35",ranksep="0.65")
-                for name in input_names:
-                    dot.node(name,f"{name}\\n{next(v['label'] for v in spec['inputs'] if v['name']==name)}",shape="box")
-                def add_node(node,parent=None,edge_label=""):
-                    from sympy.logic.boolalg import And, Or, Not, Xor
-                    if getattr(node,"is_Symbol",False):
-                        if parent: dot.edge(str(node),parent,label=edge_label)
-                        return str(node)
-                    nid=f"n{len(dot.body)}"
-                    label=("NOT" if isinstance(node,Not) else "AND" if isinstance(node,And) else "OR" if isinstance(node,Or) else "XOR" if isinstance(node,Xor) else str(node))
-                    dot.node(nid,label,shape="ellipse")
-                    if parent: dot.edge(nid,parent,label=edge_label)
-                    for child in node.args:
-                        cid=add_node(child)
-                        dot.edge(cid,nid)
-                    return nid
-                root=add_node(result["expression"])
-                dot.node("OUT",f"{output_name}\\n{next((o['label'] for o in spec['outputs'] if o['name']==output_name),output_name)}",shape="box",style="filled",fillcolor="lightgoldenrod1")
-                dot.edge(root,"OUT")
-                st.graphviz_chart(dot, use_container_width=True)
-                st.download_button("Download schematic SVG",dot.pipe(format="svg"),file_name="logic_schematic.svg",mime="image/svg+xml")
-            except Exception as exc:
-                st.warning(f"Schematic rendering unavailable: {exc}")
-            st.subheader("Download design files")
-            verilog_expr=expression_to_verilog(result["expression"],input_names,output_name)
-            verilog=f"module logic_circuit(input {', '.join(input_names)}, output {output_name});\n  assign {output_name} = {verilog_expr};\nendmodule\n"
-            circ=build_logisim_circuit(result["expression"],input_names,output_name)
-            d1,d2=st.columns(2)
-            with d1: st.download_button("Download Verilog (.v)",verilog,file_name="logic_circuit.v",mime="text/plain",use_container_width=True)
-            with d2: st.download_button("Download Logisim (.circ)",circ,file_name="logic_circuit.circ",mime="application/xml",use_container_width=True)
-            st.subheader("Architectural analysis")
-            st.markdown(
-                "- **Boolean reduction:** the minimized expression is computed with SymPy's exact Boolean minimization routines for the declared input set.\n"
-                "- **Universal gates:** NAND-only or NOR-only conversion can be added as a technology-mapping stage; a smaller Boolean expression does not always mean the fastest physical circuit.\n"
-                "- **Hazards:** exhaustive truth-table equivalence does not prove hazard-free timing behavior. Static hazards require path-delay analysis and, where appropriate, consensus terms.\n"
-                "- **Safety:** generated logic is a design aid, not a certified safety controller. Independent review and hardware validation are mandatory for industrial systems."
-            )
-        except Exception as exc:
-            st.exception(exc)
-with tab_demos:
-    st.markdown("Choose one of three prepared scenarios. Click **Load demo** to place its requirement in the builder.")
-    for name, demo in DEMO_SCENARIOS.items():
-        with st.expander(name):
-            st.write(demo["description"])
-            st.json(demo)
-            if st.button(f"Load demo: {name}",key=f"load_{name}"):
-                st.session_state["spec"]=demo
-                st.session_state.pop("parse_error",None)
-                st.rerun()
-with tab_help:
-    st.markdown("""
-### Supported behavior
-- 1–6 Boolean inputs and up to 4 outputs in the validated JSON schema.
-- Offline parser supports the included demo cases and explicit Boolean-expression syntax.
-- Optional OpenAI parsing is enabled by setting `OPENAI_API_KEY` and switching on the parser toggle.
-- The original rule is evaluated over every possible input vector before minimization is accepted.
+circuit_name = st.sidebar.selectbox("Target circuit", ["Full Adder", "4-bit Ripple Carry Adder", "4:1 MUX"])
+circuit = make_circuit(circuit_name)
+fault_kind = st.sidebar.selectbox("Fault type", ["Stuck-at-0", "Stuck-at-1", "Gate mutation", "AND bridging", "OR bridging"])
+node_options = list(circuit.nodes)
+if fault_kind.startswith("Stuck"):
+    node = st.sidebar.selectbox("Fault node", node_options, index=min(1, len(node_options)-1))
+    fault = Fault("stuck_at", node=node, value=0 if fault_kind.endswith("0") else 1)
+elif fault_kind == "Gate mutation":
+    gate_names = [g.name for g in circuit.gates]
+    node = st.sidebar.selectbox("Gate to mutate", gate_names)
+    gate = circuit.gate_by_name[node]
+    choices = [op for op in MUTATIONS[gate.op] if op != gate.op]
+    replacement = st.sidebar.selectbox("Replacement operation", choices)
+    fault = Fault("mutation", node=node, replacement=replacement)
+else:
+    # Restrict to independent signals, avoiding combinational feedback through a bridge.
+    anc = circuit.ancestors()
+    pairs = [(a,b) for i,a in enumerate(node_options) for b in node_options[i+1:]
+             if a not in anc.get(b,set()) and b not in anc.get(a,set())]
+    pair_label = st.sidebar.selectbox("Signals to bridge", [f"{a} ↔ {b}" for a,b in pairs])
+    a,b = pair_label.split(" ↔ ")
+    fault = Fault("bridge_and" if fault_kind == "AND bridging" else "bridge_or", nodes=(a,b))
 
-### Important limits
-Natural language is ambiguous. Always inspect the generated variable mapping and rules before exporting. The offline parser deliberately refuses unfamiliar prose rather than guessing. For high-stakes systems, translate requirements into a reviewed formal specification and verify against that specification; an LLM cannot guarantee the meaning of arbitrary English.
+st.sidebar.info(f"{len(circuit.inputs)} inputs → {2**len(circuit.inputs)} exhaustive vectors")
+if st.sidebar.button("Run diagnosis and repair", type="primary"):
+    started = time.perf_counter()
+    table = differential_table(circuit, fault)
+    result = diagnose(circuit, fault)
+    repaired = circuit.clone()
+    verification = verify_equivalence(circuit, repaired)
+    elapsed = (time.perf_counter() - started) * 1000
+    st.session_state["run"] = {
+        "table": table, "result": result, "fault": fault,
+        "verification": verification, "elapsed": elapsed,
+        "prompt": make_llm_prompt(circuit, fault, table,
+                                  [{"label": x["label"], "confidence": x["confidence"]} for x in result.candidates])
+    }
 
-### Logisim
-The exporter emits a `.circ` XML project using common gate and pin components. Logisim / Logisim-evolution component schemas can vary by version, so open the file in your target application, inspect all connections, and simulate every truth-table row before submitting or deploying it.
-""")
+if "run" in st.session_state:
+    run = st.session_state["run"]
+    table, result = run["table"], run["result"]
+    m1,m2,m3,m4 = st.columns(4)
+    m1.metric("Fault detected", "Yes" if result.detection_rate_percent else "No")
+    m2.metric("Dictionary candidates", len(result.candidates))
+    m3.metric("Diagnostic resolution", f"{result.diagnostic_resolution_percent:.1f}%")
+    m4.metric("Analysis latency", f"{result.latency_ms:.1f} ms")
+    st.subheader("Differential truth table")
+    st.dataframe(table, use_container_width=True, height=350)
+    st.download_button("Download differential CSV", table.to_csv(index=False).encode(), "differential_truth_table.csv", "text/csv")
+    st.subheader("Fault diagnosis candidates")
+    if result.candidates:
+        st.dataframe(pd.DataFrame([{k:v for k,v in c.items() if k not in ("fault",)} for c in result.candidates]),
+                     use_container_width=True)
+        if len(result.candidates) > 1:
+            st.warning("The observed signature is ambiguous: multiple modeled faults are observationally equivalent under exhaustive tests.")
+    else:
+        st.success("No non-equivalent fault signature matched; check whether the injected fault is masked or equivalent.")
+    st.subheader("Repair and exhaustive equivalence")
+    if run["verification"]["equivalent"]:
+        st.success(f"PASS: repaired nominal model matches golden model on all {run['verification']['vectors_checked']} input vectors.")
+    else:
+        st.error(f"FAIL: {len(run['verification']['mismatches'])} mismatches found.")
+    st.caption("Repair currently disables the fault overlay and restores the nominal netlist. This is appropriate for the simulator's injected-fault model; it is not a physical repair procedure.")
+    st.subheader("LLM diagnostic prompt (optional)")
+    st.code(json.dumps(run["prompt"], indent=2), language="json")
+    st.download_button("Download structured LLM prompt", json.dumps(run["prompt"], indent=2), "diagnostic_prompt.json", "application/json")
+    out1, out2 = st.columns(2)
+    for col, filename, repaired_flag in [(out1,"faulty_circuit.circ",False),(out2,"repaired_circuit.circ",True)]:
+        buf = io.BytesIO()
+        export_logisim(circuit, "/tmp/"+filename, fault=run["fault"], repaired=repaired_flag)
+        with open("/tmp/"+filename, "rb") as f: data=f.read()
+        col.download_button(f"Download {filename}", data, filename, "application/xml")
+    st.info("Logisim files are schematic scaffolds with labels; the exporter does not yet route and wire every net automatically. Inspect before using them as circuit evidence.")
+else:
+    st.markdown("### Quick start")
+    st.write("Choose a circuit and fault in the sidebar, then run diagnosis. The tool enumerates all input combinations, compares golden and faulty outputs, matches the observed signature against a fault dictionary, and exhaustively verifies the repaired nominal model.")
+    st.write("For a strict DFT flow, include additional constraints such as scan access, test-point insertion, unknown-state handling, physical adjacency data for bridging faults, and gate-level netlist import.")
