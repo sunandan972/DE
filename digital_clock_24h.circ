@@ -1,0 +1,152 @@
+<?xml version='1.0' encoding='utf-8'?>
+<project version="1.0" source="24-hour digital clock">
+  <lib name="0" desc="Wiring" />
+  <lib name="1" desc="Gates" />
+  <lib name="2" desc="Memory" />
+  <lib name="3" desc="Input/Output" />
+  <main name="main" />
+  <circuit name="main">
+    <comp lib="0" name="Pin" loc="(40,50)">
+      <a name="facing" val="east" />
+      <a name="output" val="false" />
+      <a name="label" val="CLK" />
+    </comp>
+    <comp lib="0" name="Pin" loc="(40,90)">
+      <a name="facing" val="east" />
+      <a name="output" val="false" />
+      <a name="label" val="RESET_N" />
+    </comp>
+    <comp lib="0" name="Pin" loc="(40,130)">
+      <a name="facing" val="east" />
+      <a name="output" val="false" />
+      <a name="label" val="TICK_1HZ" />
+    </comp>
+    <comp lib="0" name="Pin" loc="(40,170)">
+      <a name="facing" val="east" />
+      <a name="output" val="false" />
+      <a name="label" val="SET_MODE" />
+    </comp>
+    <comp lib="0" name="Pin" loc="(40,210)">
+      <a name="facing" val="east" />
+      <a name="output" val="false" />
+      <a name="label" val="INC_MIN" />
+    </comp>
+    <comp lib="0" name="Pin" loc="(40,250)">
+      <a name="facing" val="east" />
+      <a name="output" val="false" />
+      <a name="label" val="INC_HR" />
+    </comp>
+    <comp lib="2" name="D Flip-Flop" loc="(180,70)">
+      <a name="label" val="SEC_UNITS[0]" />
+    </comp>
+    <comp lib="2" name="D Flip-Flop" loc="(180,95)">
+      <a name="label" val="SEC_UNITS[1]" />
+    </comp>
+    <comp lib="2" name="D Flip-Flop" loc="(180,120)">
+      <a name="label" val="SEC_UNITS[2]" />
+    </comp>
+    <comp lib="2" name="D Flip-Flop" loc="(180,145)">
+      <a name="label" val="SEC_UNITS[3]" />
+    </comp>
+    <comp lib="2" name="D Flip-Flop" loc="(180,190)">
+      <a name="label" val="SEC_TENS[0]" />
+    </comp>
+    <comp lib="2" name="D Flip-Flop" loc="(180,215)">
+      <a name="label" val="SEC_TENS[1]" />
+    </comp>
+    <comp lib="2" name="D Flip-Flop" loc="(180,240)">
+      <a name="label" val="SEC_TENS[2]" />
+    </comp>
+    <comp lib="2" name="D Flip-Flop" loc="(360,70)">
+      <a name="label" val="MIN_UNITS[0]" />
+    </comp>
+    <comp lib="2" name="D Flip-Flop" loc="(360,95)">
+      <a name="label" val="MIN_UNITS[1]" />
+    </comp>
+    <comp lib="2" name="D Flip-Flop" loc="(360,120)">
+      <a name="label" val="MIN_UNITS[2]" />
+    </comp>
+    <comp lib="2" name="D Flip-Flop" loc="(360,145)">
+      <a name="label" val="MIN_UNITS[3]" />
+    </comp>
+    <comp lib="2" name="D Flip-Flop" loc="(360,190)">
+      <a name="label" val="MIN_TENS[0]" />
+    </comp>
+    <comp lib="2" name="D Flip-Flop" loc="(360,215)">
+      <a name="label" val="MIN_TENS[1]" />
+    </comp>
+    <comp lib="2" name="D Flip-Flop" loc="(360,240)">
+      <a name="label" val="MIN_TENS[2]" />
+    </comp>
+    <comp lib="2" name="D Flip-Flop" loc="(540,70)">
+      <a name="label" val="HR_UNITS[0]" />
+    </comp>
+    <comp lib="2" name="D Flip-Flop" loc="(540,95)">
+      <a name="label" val="HR_UNITS[1]" />
+    </comp>
+    <comp lib="2" name="D Flip-Flop" loc="(540,120)">
+      <a name="label" val="HR_UNITS[2]" />
+    </comp>
+    <comp lib="2" name="D Flip-Flop" loc="(540,145)">
+      <a name="label" val="HR_UNITS[3]" />
+    </comp>
+    <comp lib="2" name="D Flip-Flop" loc="(540,190)">
+      <a name="label" val="HR_TENS[0]" />
+    </comp>
+    <comp lib="2" name="D Flip-Flop" loc="(540,215)">
+      <a name="label" val="HR_TENS[1]" />
+    </comp>
+    <comp lib="1" name="Decoder" loc="(680,80)">
+      <a name="label" val="BCD7SEG_H10" />
+    </comp>
+    <comp lib="3" name="7-Segment Display" loc="(680,180)">
+      <a name="label" val="H10" />
+    </comp>
+    <comp lib="1" name="Decoder" loc="(775,80)">
+      <a name="label" val="BCD7SEG_H1" />
+    </comp>
+    <comp lib="3" name="7-Segment Display" loc="(775,180)">
+      <a name="label" val="H1" />
+    </comp>
+    <comp lib="1" name="Decoder" loc="(870,80)">
+      <a name="label" val="BCD7SEG_M10" />
+    </comp>
+    <comp lib="3" name="7-Segment Display" loc="(870,180)">
+      <a name="label" val="M10" />
+    </comp>
+    <comp lib="1" name="Decoder" loc="(965,80)">
+      <a name="label" val="BCD7SEG_M1" />
+    </comp>
+    <comp lib="3" name="7-Segment Display" loc="(965,180)">
+      <a name="label" val="M1" />
+    </comp>
+    <comp lib="1" name="Decoder" loc="(1060,80)">
+      <a name="label" val="BCD7SEG_S10" />
+    </comp>
+    <comp lib="3" name="7-Segment Display" loc="(1060,180)">
+      <a name="label" val="S10" />
+    </comp>
+    <comp lib="1" name="Decoder" loc="(1155,80)">
+      <a name="label" val="BCD7SEG_S1" />
+    </comp>
+    <comp lib="3" name="7-Segment Display" loc="(1155,180)">
+      <a name="label" val="S1" />
+    </comp>
+    <comp lib="0" name="Pin" loc="(850,320)">
+      <a name="facing" val="west" />
+      <a name="output" val="true" />
+      <a name="label" val="TC_SEC" />
+    </comp>
+    <comp lib="0" name="Pin" loc="(850,355)">
+      <a name="facing" val="west" />
+      <a name="output" val="true" />
+      <a name="label" val="TC_MIN" />
+    </comp>
+    <comp lib="0" name="Pin" loc="(850,390)">
+      <a name="facing" val="west" />
+      <a name="output" val="true" />
+      <a name="label" val="TC_HOUR" />
+    </comp>
+    <appear />
+  </circuit>
+</project>
