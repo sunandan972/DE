@@ -1,8 +1,1 @@
-streamlit>=1.35
-sympy>=1.12
-graphviz>=0.20
-matplotlib>=3.8
-pandas>=2.0
-numpy>=1.26
-openai>=1.30
-pytest>=8.0
+# Python standard library only; logisim_fsm.py uses xml.etree.ElementTree
