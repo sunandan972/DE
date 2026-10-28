@@ -1,76 +1,62 @@
-# Boolean Logic Workbench
+# Natural Language to Logic Circuit Generator & Simulator
 
-Streamlit prototype for 4-, 5-, and 6-variable Boolean minimization using Quine–McCluskey prime implicant generation and Petrick-style minimum-cover selection. Includes truth tables, K-map planes, Verilog export, a Logisim XML exporter, complexity estimates, and exhaustive equivalence checking.
+A Streamlit engineering prototype that converts supported English decision specifications into a validated Boolean JSON specification, truth table, minimized SOP/POS expression, live input simulator, schematic, Verilog, and a Logisim `.circ` export.
 
 ## Requirements
+- Python 3.11+
+- Graphviz system executable recommended for SVG schematic rendering (`brew install graphviz` on macOS; `sudo apt install graphviz` on Debian/Ubuntu).
+- Optional OpenAI API key for LLM-assisted parsing. Offline demo and expression parsing work without a key.
 
-- Python 3.11 or newer recommended
-- Logisim-evolution or Logisim installed separately for opening `.circ` exports
-- Internet is not required after Python dependencies are installed
-
-## Setup (macOS / Linux)
-
+## Setup
 ```bash
-cd boolean_logic_generator
+cd nl_logic_circuit_generator
 python3 -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 streamlit run app.py
 ```
+Open the local URL printed by Streamlit (typically http://localhost:8501).
 
-On Windows PowerShell:
-
+## Optional OpenAI parser
+macOS/Linux:
+```bash
+export OPENAI_API_KEY="your-key"
+streamlit run app.py
+```
+PowerShell:
 ```powershell
-py -3.11 -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -r requirements.txt
+$env:OPENAI_API_KEY="your-key"
 streamlit run app.py
 ```
+Never commit API keys. Use environment variables or a secret manager.
 
-Open the local URL printed by Streamlit, usually `http://localhost:8501`.
+## Demo scenarios
+1. Automobile seatbelt & ignition safety (3 inputs).
+2. Chemical tank overflow & temperature alarm (4 inputs).
+3. Three-person majority voting with override (4 inputs).
 
-## Input formats
-
-- Minterms: `Σm(0, 2, 5, 7) + d(1, 3)`
-- Maxterms: `ΠM(0, 1, 4, 7)`
-- Expression: textbook apostrophe complements and `+` OR, e.g. `A'B'C'D + AB'C'D`
-- Truth table: exactly `2^N` rows, ascending binary order, input columns followed by output `F`
-
-Variable order is A as most-significant bit through the selected final variable as least-significant bit.
+Load a demo in the **Demo scenarios** tab. The parser returns a structured intermediate JSON spec; the app then builds the truth table and minimizes the selected output.
 
 ## Tests
-
 ```bash
 pytest -q
 ```
 
-## Open a generated circuit
+## Logisim import
+1. Download the `.circ` file from the app.
+2. Open Logisim or Logisim-evolution and use **File → Open**.
+3. Inspect component properties, pin directions, and every wire.
+4. Simulate all truth-table combinations and compare with the CSV output before relying on the circuit.
 
-1. Click **Generate Logisim .circ file**, then download the file.
-2. Open Logisim / Logisim-evolution and choose **File → Open**, then select the `.circ` file.
-3. Inspect every gate input, wire, and output pin. Component attribute names and gate pin geometry can differ between Logisim classic and Logisim-evolution versions.
-4. Run the simulator, toggle each input, and compare against the truth table shown in the app.
+## Boolean expression syntax
+Use uppercase variable names A-F and operators `AND`, `OR`, `NOT`, `&`, `|`, `~`, `^`, with parentheses. Example:
+`Y = (A AND B) OR NOT C`
 
-## Engineering limitations 
-
-- The Boolean minimizer and truth-table equivalence checker are algorithmic; the checker verifies the reduced expression against the ON-set exhaustively.
-- The Logisim file is generated XML and parsed for well-formedness, but this alone does **not** prove the target Logisim version accepts or electrically connects every wire. Validate the downloaded circuit in the exact version you use. Gate-pin geometry varies by version, and this starter generator is not a replacement for opening and simulation-testing the artifact.
-- K-map cells are displayed in Gray-code order and grouped by plane; automatic colored prime-implicant loop overlays are not implemented yet.
-- The expression parser supports common textbook notation, not every possible Boolean syntax. Prefer minterm notation or truth-table input for unambiguous results.
-- Complexity figures are educational first-order estimates, not standard-cell synthesis, transistor-level netlist estimates, or timing sign-off. Actual propagation delay requires a target technology/library and load/fan-out assumptions.
-- The LLM integration is a prompt generator. It does not require an API key and does not make claims about theorem steps it cannot substantiate.
-
-## File layout
-
-```text
-boolean_logic_generator/
-├── app.py
-├── simplifier.py
-├── logisim_builder.py
-├── requirements.txt
-├── README.md
-└── tests/
-    └── test_simplifier.py
-```
+## Engineering and safety notes
+- Offline natural-language parsing is intentionally conservative: it recognizes known demo patterns and explicit Boolean expressions; unfamiliar free-form prose requires the optional LLM parser or a reviewed explicit rule.
+- SymPy performs exact Boolean minimization for the bounded input count. The app exhaustively checks the reduced expression against the formal rule represented in the intermediate specification.
+- The equivalence test is not proof that the English specification was interpreted correctly. Review the JSON specification.
+- Gate counts, CMOS transistor estimates, and delay are rough educational metrics, not technology-specific synthesis or sign-off.
+- Logisim XML schemas and gate pin coordinates vary across versions. Treat export as a starting point and verify it in the exact installed version.
+- Hazard-free behavior is not proven by static truth-table equivalence. Real-time industrial or automotive safety use requires formal requirements, timing analysis, independent verification, and certified hardware/software processes.

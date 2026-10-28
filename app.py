@@ -1,153 +1,165 @@
 from __future__ import annotations
-import io
-import re
-import pandas as pd
+import json, os
 import streamlit as st
+import pandas as pd
 import matplotlib.pyplot as plt
-import numpy as np
-import sympy as sp
-from simplifier import (minimize, parse_minterm_notation, parse_boolean_expression,
-                        parse_truth_table, truth_table_for_minterms, verify_equivalence,
-                        complexity_metrics, algebraic_steps)
-from logisim_builder import build_logisim_circuit
+from sympy import symbols
+from sympy.logic.boolalg import SOPform, POSform, simplify_logic
+from nl_parser import DEMO_SCENARIOS, parse_natural_language, expression_to_sympy
+from logic_engine import (build_truth_table, canonical_forms, minimize_function, verify_spec,
+                          complexity_metrics, expression_to_verilog, variable_symbols)
+from logisim_exporter import build_logisim_circuit
 
-st.set_page_config(page_title="Boolean Logic Workbench", page_icon="⚡", layout="wide")
-st.title("⚡ AI-Assisted Boolean Simplifier & Logisim Generator")
-st.caption("Exact Quine–McCluskey minimization · Petrick cover selection · K-maps · Verilog · Logisim XML · exhaustive verification")
-
+st.set_page_config(page_title="Natural Language → Logic Circuit", page_icon="⚡", layout="wide")
+st.title("⚡ Natural Language to Logic Circuit Generator")
+st.caption("Translate a decision rule into Boolean logic, inspect the truth table, simulate inputs, and export design artifacts.")
 with st.sidebar:
-    st.header("Function setup")
-    n_vars = st.selectbox("Number of variables", [4,5,6], index=0)
-    input_mode = st.radio("Input method", ["Minterm / maxterm notation", "Boolean expression", "Truth table"], index=0)
-    form = st.radio("Reduction form", ["SOP", "POS"], horizontal=True)
-    st.info("Variable order is A (MSB), then B, C, D, E, F (LSB). Don't-cares are allowed for minterm notation.")
+    st.header("Configuration")
+    use_llm=st.toggle("Use OpenAI parser", value=False, help="Requires OPENAI_API_KEY in the environment.")
+    st.info("LLM output is treated as a draft specification and must pass validation and exhaustive logic checks.")
+    st.markdown("**Pipeline**")
+    st.markdown("1. Extract variables and rules\n2. Build truth table\n3. Minimize SOP/POS\n4. Verify all input states\n5. Export Verilog and Logisim")
 
-if input_mode == "Minterm / maxterm notation":
-    raw = st.text_input("Function", value="Σm(0, 2, 5, 7, 8, 10, 13, 15) + d(1, 3)")
-    parse_button = st.button("Simplify function", type="primary")
-    if parse_button:
+tab_build, tab_demos, tab_help = st.tabs(["Build a circuit", "Demo scenarios", "Help & assumptions"])
+with tab_build:
+    default_text="The alarm triggers when both the key is valid and the code is correct, or when motion is detected while night mode is active."
+    text=st.text_area("Describe the decision problem in plain English",value=default_text,height=120,
+                      placeholder="Example: Enable the motor when the guard is closed AND start is pressed, unless emergency stop is active.")
+    c1,c2=st.columns([1,3])
+    with c1:
+        parse_clicked=st.button("Extract logic specification",type="primary",use_container_width=True)
+    with c2:
+        st.caption("Offline mode supports the included demo patterns and explicit expressions such as `Y = (A AND B) OR NOT C`.")
+    if parse_clicked:
         try:
-            on_set, dont_cares = parse_minterm_notation(raw, n_vars)
-            st.session_state["function_data"] = {"on":on_set,"dc":dont_cares,"source":raw}
-        except Exception as exc: st.error(str(exc))
-elif input_mode == "Boolean expression":
-    raw = st.text_input("Boolean expression", value="A'B'C'D + AB'C'D + A'B'CD")
-    parse_button = st.button("Simplify function", type="primary")
-    if parse_button:
+            st.session_state["spec"]=parse_natural_language(text,use_llm=use_llm)
+            st.session_state.pop("parse_error",None)
+        except Exception as exc:
+            st.session_state["parse_error"]=str(exc)
+    if "parse_error" in st.session_state:
+        st.error(st.session_state["parse_error"])
+    if "spec" in st.session_state:
+        spec=st.session_state["spec"]
+        st.subheader("Intermediate JSON specification")
+        st.json(spec,expanded=True)
+        input_names=[v["name"] for v in spec["inputs"]]
+        output_names=[v["name"] for v in spec["outputs"]]
+        output_name=st.selectbox("Output to analyze",output_names)
+        form=st.radio("Minimization form",["SOP","POS"],horizontal=True)
         try:
-            on_set, dont_cares, _ = parse_boolean_expression(raw, n_vars)
-            st.session_state["function_data"] = {"on":on_set,"dc":dont_cares,"source":raw}
-        except Exception as exc: st.error(str(exc))
-else:
-    st.write("Enter output values in ascending binary input order. Rows are generated for the selected variable count.")
-    count = 1 << n_vars
-    if "truth_editor" not in st.session_state or len(st.session_state["truth_editor"]) != count:
-        st.session_state["truth_editor"] = pd.DataFrame(truth_table_for_minterms([], n_vars), columns=[*list("ABCDEF")[:n_vars],"F"])
-    edited = st.data_editor(st.session_state["truth_editor"], num_rows="fixed", use_container_width=True, key=f"truth_{n_vars}")
-    if st.button("Simplify truth table", type="primary"):
-        try:
-            on_set = parse_truth_table(edited.astype(int).values.tolist(), n_vars)
-            st.session_state["function_data"] = {"on":on_set,"dc":[],"source":"Truth table"}
-        except Exception as exc: st.error(str(exc))
-
-if "function_data" in st.session_state:
-    data = st.session_state["function_data"]
-    on_set, dc_set = data["on"], data["dc"]
-    st.divider()
-    st.subheader("Exact minimization results")
-    try:
-        result = minimize(on_set, n_vars, dc_set, form)
-        other = minimize(on_set, n_vars, dc_set, "POS" if form == "SOP" else "SOP")
-        c1,c2,c3 = st.columns(3)
-        c1.metric("Variables", n_vars)
-        c2.metric("ON-set minterms", len(on_set))
-        c3.metric("Don't-cares", len(dc_set))
-        st.markdown(f"### Minimal {form}: `{result.expression}`")
-        st.caption(f"Selected implicants: {len(result.selected_implicants)} · Prime implicants: {len(result.prime_implicants)} · Equally minimal covers found: {len(result.all_minimum_covers)}")
-        with st.expander("Quine–McCluskey prime implicants and Petrick cover"):
-            st.write("Prime implicants (dash means the variable is eliminated):")
-            st.dataframe(pd.DataFrame([{"Pattern":p.pattern,"Literals":p.literals,"Covers ON-set":sorted(set(p.covered)&set(on_set)),"Selected":p in result.selected_implicants} for p in result.prime_implicants]), use_container_width=True)
-            st.write("Other form:", other.expression)
-        st.subheader("Truth table and equivalence verification")
-        table = truth_table_for_minterms(on_set, n_vars)
-        df = pd.DataFrame(table, columns=[*list("ABCDEF")[:n_vars],"F_original"])
-        st.dataframe(df, use_container_width=True, height=260)
-        verification = verify_equivalence(on_set, result.expression, n_vars, form)
-        if verification["equivalent"]: st.success(f"PASS — exact equivalence verified for all {verification['tested_rows']} input combinations.")
-        else: st.error(f"FAIL — {len(verification['mismatches'])} mismatches detected.")
-        st.subheader("Karnaugh map")
-        # Gray code ordering for each 4x4 plane. 5-var uses 2 planes; 6-var uses 4.
-        gray = [0,1,3,2]
-        plane_vars = n_vars - 4
-        plane_count = 1 << plane_vars
-        cols = st.columns(plane_count)
-        for plane in range(plane_count):
-            grid = np.zeros((4,4), dtype=int)
-            labels = []
-            for ri,r in enumerate(gray):
-                for ci,c in enumerate(gray):
-                    idx = (plane << 4) | (r << 2) | c
-                    grid[ri,ci] = 2 if idx in dc_set else (1 if idx in on_set else 0)
-            fig, ax = plt.subplots(figsize=(3.6,3.2))
-            ax.imshow(grid, vmin=0, vmax=2, cmap="YlGnBu")
-            ax.set_xticks(range(4), [format(x, "02b") for x in gray])
-            ax.set_yticks(range(4), [format(x, "02b") for x in gray])
-            for ri in range(4):
-                for ci in range(4):
-                    idx = (plane << 4) | (gray[ri] << 2) | gray[ci]
-                    value = "X" if idx in dc_set else str(int(idx in on_set))
-                    ax.text(ci,ri,value,ha="center",va="center",color="black",fontsize=11)
-            ax.set_xlabel("CD (Gray order)"); ax.set_ylabel("AB (Gray order)")
-            prefix = "" if n_vars == 4 else f"{''.join(list('EF')[:plane_vars])} = {format(plane, f'0{plane_vars}b')}"
-            ax.set_title(f"K-map {prefix}".strip())
-            fig.tight_layout()
-            with cols[plane]: st.pyplot(fig, use_container_width=True)
-            plt.close(fig)
-        st.caption("Cells are displayed in Gray-code order. X denotes a don't-care. Group-loop overlays are not drawn in this version; implicant patterns are listed above.")
-        st.subheader("Circuit complexity estimates")
-        before_expr = " + ".join("".join((list("ABCDEF")[:n_vars][j] if bit=="1" else list("ABCDEF")[:n_vars][j]+"'") for j,bit in enumerate(format(m,f'0{n_vars}b'))) for m in on_set) or "0"
-        before = complexity_metrics(before_expr,"SOP",n_vars)
-        after = complexity_metrics(result.expression,form,n_vars)
-        st.dataframe(pd.DataFrame([{"Metric":"Gate count","Before":before['gate_count'],"After":after['gate_count']},{"Metric":"Input pins (approx.)","Before":before['input_pins'],"After":after['input_pins']},{"Metric":"Logic depth (levels)","Before":before['logic_depth'],"After":after['logic_depth']},{"Metric":"CMOS transistors (estimate)","Before":before['transistors_est'],"After":after['transistors_est']}]), use_container_width=True)
-        st.caption("Before is represented as canonical SOP; after follows the selected form. Estimates use basic multi-input gate assumptions and are not transistor-level synthesis results.")
-        st.subheader("Verilog output")
-        names = list("ABCDEF")[:n_vars]
-        verilog = f"module boolean_simplified({', '.join(names)}, F_out);\n  input {', '.join(names)};\n  output F_out;\n  assign F_out = {result.expression.replace(chr(39), '').replace('+',' | ').replace('(','(').replace(')',' )').replace('A','A').replace('B','B')};\nendmodule\n"
-        # Render the expression using explicit Verilog operators safely from implicant patterns.
-        if result.expression in ("0","1"): verilog_rhs = result.expression
-        elif form == "SOP":
-            terms=[]
-            for imp in result.selected_implicants:
-                factors=[(v if bit=='1' else '~'+v) for v,bit in zip(names,imp.pattern) if bit!='-']
-                terms.append("("+" & ".join(factors)+")" if factors else "1'b1")
-            verilog_rhs=" | ".join(terms) if terms else "1'b0"
-        else:
-            clauses=[]
-            for imp in result.selected_implicants:
-                factors=[(v if bit=='0' else '~'+v) for v,bit in zip(names,imp.pattern) if bit!='-']
-                clauses.append("("+" | ".join(factors)+")" if factors else "1'b0")
-            verilog_rhs=" & ".join(clauses) if clauses else "1'b1"
-        verilog = f"module boolean_simplified({', '.join(names)}, F_out);\n  input {', '.join(names)};\n  output F_out;\n  assign F_out = {verilog_rhs};\nendmodule\n"
-        st.code(verilog, language="verilog")
-        st.download_button("Download Verilog (.v)", verilog, file_name="boolean_simplified.v", mime="text/plain")
-        st.subheader("Logisim circuit export")
-        st.warning("Logisim component attributes and pin coordinates vary between versions. Open the exported file in your installed Logisim / Logisim-evolution and validate the wiring before relying on it for hardware work.")
-        if st.button("Generate Logisim .circ file"):
+            table=build_truth_table(spec)
+            result=minimize_function(spec,output_name,form)
+            verify=verify_spec(spec,output_name,result["expression"])
+            original_expr=expression_to_sympy(spec["rules"][output_name],input_names)
+            before=complexity_metrics(original_expr,len(input_names))
+            after=complexity_metrics(result["expression"],len(input_names))
+            st.subheader("Reduced Boolean expression")
+            st.latex(str(result["expression"]).replace("~","\\neg ").replace("&","\\land ").replace("|","\\lor "))
+            st.code(f"Canonical SOP: {result['sop_canonical']}\nCanonical POS: {result['pos_canonical']}",language="text")
+            v1,v2,v3,v4=st.columns(4)
+            v1.metric("Input combinations",f"{2**len(input_names)}")
+            v2.metric("Gate count",f"{before['gate_count']} → {after['gate_count']}")
+            v3.metric("Logic levels",f"{before['logic_levels']} → {after['logic_levels']}")
+            v4.metric("Est. CMOS transistors",f"{before['estimated_transistors_cmos']} → {after['estimated_transistors_cmos']}")
+            st.caption("Delay is an educational estimate based on 5 ns per logic level, not device-level timing.")
+            metrics=pd.DataFrame([
+                {"Metric":"Gate count","Before":before["gate_count"],"After":after["gate_count"]},
+                {"Metric":"Logic levels","Before":before["logic_levels"],"After":after["logic_levels"]},
+                {"Metric":"Estimated CMOS transistors","Before":before["estimated_transistors_cmos"],"After":after["estimated_transistors_cmos"]},
+                {"Metric":"Estimated delay (ns)","Before":before["estimated_delay_ns"],"After":after["estimated_delay_ns"]},
+            ])
+            st.dataframe(metrics,use_container_width=True,hide_index=True)
+            st.subheader("Exhaustive equivalence verification")
+            if verify["equivalent"]:
+                st.success(f"PASS — reduced expression matches the original rule for all {verify['tested']} input combinations.")
+            else:
+                st.error(f"FAIL — {len(verify['failures'])} mismatches.")
+                st.dataframe(pd.DataFrame(verify["failures"]),use_container_width=True)
+            st.subheader("Truth table")
+            st.dataframe(table,use_container_width=True,hide_index=True)
+            st.download_button("Download truth table CSV",table.to_csv(index=False).encode(),file_name="truth_table.csv",mime="text/csv")
+            st.subheader("Interactive simulator")
+            st.caption("Toggle input bits to evaluate the original and reduced expressions live.")
+            cols=st.columns(min(6,len(input_names)))
+            bits=[]
+            for i,var in enumerate(spec["inputs"]):
+                with cols[i % len(cols)]:
+                    bits.append(st.toggle(f"{var['name']} · {var['label']}",value=False,key=f"sim_{var['name']}"))
+            bit_values=[int(b) for b in bits]
+            syms=variable_symbols(input_names)
+            env=dict(zip(syms,[bool(b) for b in bit_values]))
+            original_value=int(bool(original_expr.subs(env)))
+            reduced_value=int(bool(result["expression"].subs(env)))
+            s1,s2,s3=st.columns(3)
+            s1.metric("Input vector", "".join(map(str,bit_values)))
+            s2.metric("Original output",str(original_value))
+            s3.metric("Reduced output",str(reduced_value))
+            if original_value==reduced_value: st.success("Live simulation agrees.")
+            else: st.error("Mismatch detected.")
+            st.subheader("Gate-level schematic")
             try:
-                out = build_logisim_circuit(result.expression, form, n_vars, "/tmp/boolean_simplified.circ")
-                st.session_state["circ_bytes"] = out.read_bytes()
-                st.success("Circuit XML generated and parsed successfully.")
-            except Exception as exc: st.error(f"Circuit generation failed: {exc}")
-        if "circ_bytes" in st.session_state:
-            st.download_button("Download Logisim .circ file", st.session_state["circ_bytes"], file_name="boolean_simplified.circ", mime="application/xml")
-        st.subheader("Reduction explanation")
-        st.write("The minimizer uses exact implicant combination and Petrick cover selection. SymPy's simplifier is shown as a supplementary algebraic check, not as the source of the selected cover.")
-        for step in algebraic_steps(result.expression, form): st.write("• " + step)
-        st.subheader("AI explanation prompt")
-        prompt = f"Act as a digital logic tutor. Explain the exact {form} minimization of this {n_vars}-variable Boolean function. Original ON-set: {on_set}. Don't-cares: {dc_set}. Reduced expression: {result.expression}. Explain applicable De Morgan, absorption, and consensus laws only when they genuinely apply; compare AND-OR / OR-AND with NAND-NAND / NOR-NOR implementation; mention fan-in, fan-out, logic depth, and that physical delay depends on the target library. Do not invent intermediate algebraic steps."
-        st.text_area("Copy this prompt into your preferred LLM", prompt, height=150)
-        st.download_button("Download verification report (CSV)", pd.DataFrame(verification["mismatches"]).to_csv(index=False) if verification["mismatches"] else "equivalent,tested_rows\nTrue,"+str(verification["tested_rows"])+"\n", file_name="verification_report.csv", mime="text/csv")
-    except Exception as exc:
-        st.exception(exc)
-else:
-    st.info("Choose an input method, enter a function, and select Simplify to begin.")
+                from graphviz import Digraph
+                dot=Digraph("logic",format="svg")
+                dot.attr(rankdir="LR",splines="ortho",nodesep="0.35",ranksep="0.65")
+                for name in input_names:
+                    dot.node(name,f"{name}\\n{next(v['label'] for v in spec['inputs'] if v['name']==name)}",shape="box")
+                def add_node(node,parent=None,edge_label=""):
+                    from sympy.logic.boolalg import And, Or, Not, Xor
+                    if getattr(node,"is_Symbol",False):
+                        if parent: dot.edge(str(node),parent,label=edge_label)
+                        return str(node)
+                    nid=f"n{len(dot.body)}"
+                    label=("NOT" if isinstance(node,Not) else "AND" if isinstance(node,And) else "OR" if isinstance(node,Or) else "XOR" if isinstance(node,Xor) else str(node))
+                    dot.node(nid,label,shape="ellipse")
+                    if parent: dot.edge(nid,parent,label=edge_label)
+                    for child in node.args:
+                        cid=add_node(child)
+                        dot.edge(cid,nid)
+                    return nid
+                root=add_node(result["expression"])
+                dot.node("OUT",f"{output_name}\\n{next((o['label'] for o in spec['outputs'] if o['name']==output_name),output_name)}",shape="box",style="filled",fillcolor="lightgoldenrod1")
+                dot.edge(root,"OUT")
+                st.graphviz_chart(dot, use_container_width=True)
+                st.download_button("Download schematic SVG",dot.pipe(format="svg"),file_name="logic_schematic.svg",mime="image/svg+xml")
+            except Exception as exc:
+                st.warning(f"Schematic rendering unavailable: {exc}")
+            st.subheader("Download design files")
+            verilog_expr=expression_to_verilog(result["expression"],input_names,output_name)
+            verilog=f"module logic_circuit(input {', '.join(input_names)}, output {output_name});\n  assign {output_name} = {verilog_expr};\nendmodule\n"
+            circ=build_logisim_circuit(result["expression"],input_names,output_name)
+            d1,d2=st.columns(2)
+            with d1: st.download_button("Download Verilog (.v)",verilog,file_name="logic_circuit.v",mime="text/plain",use_container_width=True)
+            with d2: st.download_button("Download Logisim (.circ)",circ,file_name="logic_circuit.circ",mime="application/xml",use_container_width=True)
+            st.subheader("Architectural analysis")
+            st.markdown(
+                "- **Boolean reduction:** the minimized expression is computed with SymPy's exact Boolean minimization routines for the declared input set.\n"
+                "- **Universal gates:** NAND-only or NOR-only conversion can be added as a technology-mapping stage; a smaller Boolean expression does not always mean the fastest physical circuit.\n"
+                "- **Hazards:** exhaustive truth-table equivalence does not prove hazard-free timing behavior. Static hazards require path-delay analysis and, where appropriate, consensus terms.\n"
+                "- **Safety:** generated logic is a design aid, not a certified safety controller. Independent review and hardware validation are mandatory for industrial systems."
+            )
+        except Exception as exc:
+            st.exception(exc)
+with tab_demos:
+    st.markdown("Choose one of three prepared scenarios. Click **Load demo** to place its requirement in the builder.")
+    for name, demo in DEMO_SCENARIOS.items():
+        with st.expander(name):
+            st.write(demo["description"])
+            st.json(demo)
+            if st.button(f"Load demo: {name}",key=f"load_{name}"):
+                st.session_state["spec"]=demo
+                st.session_state.pop("parse_error",None)
+                st.rerun()
+with tab_help:
+    st.markdown("""
+### Supported behavior
+- 1–6 Boolean inputs and up to 4 outputs in the validated JSON schema.
+- Offline parser supports the included demo cases and explicit Boolean-expression syntax.
+- Optional OpenAI parsing is enabled by setting `OPENAI_API_KEY` and switching on the parser toggle.
+- The original rule is evaluated over every possible input vector before minimization is accepted.
+
+### Important limits
+Natural language is ambiguous. Always inspect the generated variable mapping and rules before exporting. The offline parser deliberately refuses unfamiliar prose rather than guessing. For high-stakes systems, translate requirements into a reviewed formal specification and verify against that specification; an LLM cannot guarantee the meaning of arbitrary English.
+
+### Logisim
+The exporter emits a `.circ` XML project using common gate and pin components. Logisim / Logisim-evolution component schemas can vary by version, so open the file in your target application, inspect all connections, and simulate every truth-table row before submitting or deploying it.
+""")
