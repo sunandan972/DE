@@ -53,7 +53,7 @@ pytest -q
 3. Inspect every gate input, wire, and output pin. Component attribute names and gate pin geometry can differ between Logisim classic and Logisim-evolution versions.
 4. Run the simulator, toggle each input, and compare against the truth table shown in the app.
 
-## Engineering limitations (read before using for assessment)
+## Engineering limitations 
 
 - The Boolean minimizer and truth-table equivalence checker are algorithmic; the checker verifies the reduced expression against the ON-set exhaustively.
 - The Logisim file is generated XML and parsed for well-formedness, but this alone does **not** prove the target Logisim version accepts or electrically connects every wire. Validate the downloaded circuit in the exact version you use. Gate-pin geometry varies by version, and this starter generator is not a replacement for opening and simulation-testing the artifact.
